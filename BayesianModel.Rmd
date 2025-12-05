@@ -1,9 +1,11 @@
 ---
-title: "FinalProject"
+title: "Final Project Implmentation - Bayesian Model"
 author: "Elizabeth Lattanzi"
 date: "2025-11-30"
 output: html_document
 ---
+
+### Load necessary libraries 
 
 ```{r setup, include=FALSE}
 library(sf)
@@ -20,90 +22,24 @@ library(bayesplot)
 library(Metrics)
 ```
 
-### Load and clean wildfire data
+
+### Read in the data 
 
 ```{r}
 
-# Aggregate burned acreage data and group by county ID and year, and add a join
-
-path <- "fire24_1.gdb"
-fire_data <- st_read(path, layer = "firep24_1") %>%
-  st_drop_geometry()
-county_year_burned <- fire_data %>%
-  group_by(UNIT_ID, YEAR_) %>%
-  summarise(total_burned_acres = sum(GIS_ACRES, na.rm = TRUE), .groups = "drop")
-
-
-unit_lookup <- tibble::tibble(
-  UNIT_ID = c("BTU", "LNU", "SHF", "SCU", "MNF", "TGU", "NEU"),
-  county = c("Butte County", "Napa County", "Shasta County", "Santa Clara County", 
-             "Mendocino County", "Tehama County", "Nevada County"))
-
-county_year_named <- county_year_burned %>%
-  left_join(unit_lookup, by = "UNIT_ID")
-
+data <- read.csv("bayesian_data.csv")
 
 ```
 
-### Load and clean lung cancer data
-
-```{r}
-
-
-# Clean and standardize data, filter out rows where key variable is missing  
-
-lung_data_raw <- read_csv("incd.csv", skip = 8)
-names(lung_data_raw) <- make.names(names(lung_data_raw))
-lung_data <- lung_data_raw %>%
-  clean_names() %>%
-  filter(!is.na(age_adjusted_incidence_rate_rate_note_cases_per_100_000)) %>%
-  mutate(county = gsub("\\s*\\(.*\\)", "", county))
-
-
-```
-
-### Merge and derive exposure variables
-```{r}
-
-#  Join the cleaned lung cancer data with the wildfire exposure data, using the county name as the key, merge into the final clean dataset
-
-merged_data <- lung_data %>%
-  left_join(county_year_named, by = "county") %>%
-  mutate(age_adjusted_rate = as.numeric(age_adjusted_incidence_rate_rate_note_cases_per_100_000), incidence_numeric = age_adjusted_rate)
-```
-
-### Merge in PM2.5 data and preprocess
-```{r}
-
-# Add in the PM2.5 dataset, merge into the final dataset
-# Z-score standardize the pm25_avg, log-transform total burned acres 
-
-pm_data <- "pm2.5_data"
-pm_data <- list.files(pm_data, pattern = "\\.csv$", full.names = TRUE)
-
-pm25_all <- map_dfr(pm_data, function(file) {
-  read_csv(file, show_col_types = FALSE) %>%
-    filter(`State Code` == "06", `Parameter Name` == "PM2.5 - Local Conditions") %>%
-    mutate(date = as.Date(`Date Local`), year = year(date), fips = paste0(`State Code`, str_pad(`County Code`, 3, pad = "0"))) %>%
-    group_by(fips, year) %>% summarise(pm25_avg = mean(`Arithmetic Mean`, na.rm = TRUE), .groups = "drop")})
-
-merged_data_pm25 <- merged_data %>%
-  mutate(fips = as.character(fips), YEAR_ = as.numeric(YEAR_)) %>%
-  left_join(pm25_all, by = c("fips" = "fips", "YEAR_" = "year")) %>%
-  rename(urban_rural = x2023_rural_urban_continuum_codes_rural_urban_note) %>%
-  mutate(pm25_avg_z = scale(pm25_avg, center = TRUE, scale = TRUE),log_burned_acres = log1p(total_burned_acres))
-
-```
 
 ### Fit Bayesian model
-```{r}
 
-# Set the Normal(0, 5) prior on all regression coefficients, use a student_t(3, 0, 10) prior on the model's residual standard deviation 
+```{r}
 
 
 bayes_model_pm25 <- brm(
   formula = incidence_numeric ~ pm25_avg_z * log_burned_acres + urban_rural,
-  data = merged_data_pm25,
+  data = data,
   family = gaussian(),
   prior = c(set_prior("normal(2, 3)", class = "b"), set_prior("student_t(3, 0, 10)", class = "sigma")),
   seed = 15,
@@ -120,16 +56,11 @@ bayes_model_pm25 <- brm(
 
 ```{r}
 
-# print summary statistics, posterior predictive checks 
-
 summary(bayes_model_pm25)
 pp_check(bayes_model_pm25)
-
+loo(bayes_model_pm25)
 
 ```
-
-The posterior predictive checks suggests that there are two distinct clusters with different incidence rates. This suggests there could be an interaction between terms. 
-
 
 
 
@@ -137,10 +68,8 @@ The posterior predictive checks suggests that there are two distinct clusters wi
 
 ```{r}
 
-# generate posterior predictions, extract the estimate, and the 95% interval 
 
-
-bayes_data_pred <- merged_data_pm25 %>%
+bayes_data_pred <- data %>%
   filter(!is.na(log_burned_acres), !is.na(urban_rural), !is.na(incidence_numeric), !is.na(pm25_avg_z))
 
 fitted_values <- fitted(bayes_model_pm25, newdata = bayes_data_pred)
@@ -152,31 +81,44 @@ bayes_data_pred$predicted_upper <- fitted_values[, "Q97.5"]
 ```
 
 ### Print Summary Statistics
+
 ```{r}
 
-# compute residuals, MAE, R^2, print 95% interval, plot prediction accuracy 
+
 
 bayes_data_pred$residuals <- bayes_data_pred$incidence_numeric - bayes_data_pred$predicted_mean
 mae_val <- mae(bayes_data_pred$incidence_numeric, bayes_data_pred$predicted_mean)
 r2_val <- bayes_R2(bayes_model_pm25)
 r2_summary <- summary(r2_val)
+confidence_95 <- with(bayes_data_pred, incidence_numeric >= predicted_lower & incidence_numeric <= predicted_upper)
+coverage_rate <- mean(confidence_95, na.rm = TRUE)
 print(r2_summary)
 
 cat("Final Model Performance Summary\n")
 cat(sprintf("MAE (Mean Absolute Error): %.2f\n", mae_val))
 cat(sprintf("Bayesian R²: %.2f\n", r2_val))
 
-confidence_95 <- with(bayes_data_pred, incidence_numeric >= predicted_lower & incidence_numeric <= predicted_upper)
-coverage_rate <- mean(confidence_95, na.rm = TRUE)
+
+
+
+```
+
+
+### Plot Bayesian Regression 
+
+```{r}
+
+
 
 ggplot(new_data, aes(x = y_incidence, y = y_pred)) +
   geom_point(color = "blue") +
-  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "gray") +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "darkgray") +
   labs(
     title = "Observed vs. Predicted Lung Cancer Incidence",
     x = "Observed Incidence",
     y = "Predicted Incidence"
   ) +
   theme_minimal()
+
 
 ```
