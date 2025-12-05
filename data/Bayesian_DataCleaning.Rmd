@@ -1,0 +1,104 @@
+---
+title: "Final Project - Data Cleaning"
+author: "Elizabeth Lattanzi"
+date: "2025-11-30"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+library(sf)
+library(dplyr)
+library(readr)
+library(ggplot2)
+library(brms)
+library(loo)
+library(janitor)
+library(stringr)
+library(lubridate)
+library(purrr)
+library(bayesplot)
+library(Metrics)
+```
+
+### Load and clean wildfire data
+
+```{r}
+
+# Aggregate burned acreage data and group by county ID and year, and add a join
+
+path <- "fire24_1.gdb"
+fire_data <- st_read(path, layer = "firep24_1") %>%
+  st_drop_geometry()
+county_year_burned <- fire_data %>%
+  group_by(UNIT_ID, YEAR_) %>%
+  summarise(total_burned_acres = sum(GIS_ACRES, na.rm = TRUE), .groups = "drop")
+
+
+unit_lookup <- tibble::tibble(
+  UNIT_ID = c("BTU", "LNU", "SHF", "SCU", "MNF", "TGU", "NEU"),
+  county = c("Butte County", "Napa County", "Shasta County", "Santa Clara County", 
+             "Mendocino County", "Tehama County", "Nevada County"))
+
+county_year_named <- county_year_burned %>%
+  left_join(unit_lookup, by = "UNIT_ID")
+
+
+```
+
+### Load and clean lung cancer data
+
+```{r}
+
+
+# Clean and standardize data, filter out rows where key variable is missing  
+
+lung_data_raw <- read_csv("incd.csv", skip = 8)
+names(lung_data_raw) <- make.names(names(lung_data_raw))
+lung_data <- lung_data_raw %>%
+  clean_names() %>%
+  filter(!is.na(age_adjusted_incidence_rate_rate_note_cases_per_100_000)) %>%
+  mutate(county = gsub("\\s*\\(.*\\)", "", county))
+
+
+```
+
+### Merge and derive exposure variables
+```{r}
+
+#  Join the cleaned lung cancer data with the wildfire exposure data, using the county name as the key, merge into the final clean dataset
+
+merged_data <- lung_data %>%
+  left_join(county_year_named, by = "county") %>%
+  mutate(age_adjusted_rate = as.numeric(age_adjusted_incidence_rate_rate_note_cases_per_100_000), incidence_numeric = age_adjusted_rate)
+```
+
+### Merge in PM2.5 data and preprocess
+```{r}
+
+# Add in the PM2.5 dataset, merge into the final dataset
+# Z-score standardize the pm25_avg, log-transform total burned acres 
+
+pm_data <- "pm2.5_data"
+pm_data <- list.files(pm_data, pattern = "\\.csv$", full.names = TRUE)
+
+pm25_all <- map_dfr(pm_data, function(file) {
+  read_csv(file, show_col_types = FALSE) %>%
+    filter(`State Code` == "06", `Parameter Name` == "PM2.5 - Local Conditions") %>%
+    mutate(date = as.Date(`Date Local`), year = year(date), fips = paste0(`State Code`, str_pad(`County Code`, 3, pad = "0"))) %>%
+    group_by(fips, year) %>% summarise(pm25_avg = mean(`Arithmetic Mean`, na.rm = TRUE), .groups = "drop")})
+
+merged_data_pm25 <- merged_data %>%
+  mutate(fips = as.character(fips), YEAR_ = as.numeric(YEAR_)) %>%
+  left_join(pm25_all, by = c("fips" = "fips", "YEAR_" = "year")) %>%
+  rename(urban_rural = x2023_rural_urban_continuum_codes_rural_urban_note) %>%
+  mutate(pm25_avg_z = scale(pm25_avg, center = TRUE, scale = TRUE),log_burned_acres = log1p(total_burned_acres))
+
+```
+
+```{r}
+
+write.csv(merged_data_pm25, "bayesian_data.csv", row.names = FALSE)
+
+
+```
