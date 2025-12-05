@@ -2,11 +2,15 @@
 DS4420 Final Project - Chia-Yi Hou and Liz Lattanzi
 
 ## Files
-1. data/Data_Preprocessing.ipynb: <br>
-Arrange the dataset collected from [CDC Wonder](https://wonder.cdc.gov/ucd-icd10.html) and 
-[Air Quality System (AQS)](https://aqs.epa.gov/aqsweb/airdata/download_files.html#Annual).
-Need to download files from these two sources to run the code. <br>
-Creates the pollution_cancer.csv (included in ./data folder) that would be used in the MLP model.<br>
+
+1. /data: <br>
+- Bayesian_DataCleaning.Rmd: Bayesian Data Preprocessing <br>
+- Data_preprocessing.ipynb: MLP Data Preprocessing <br>
+- bayesian_data.csv: Main dataset for implementing the Bayesian Model, need to download <br>
+- pollution_cancer.csv: Main dataset for implementing the MLP, need to download <br>
 
 2. MLP.ipynb: <br>
 Main file for the MLP model. <br>
+
+3. BayesianModel.RMD: <br>
+Main file for the MLP model.  <br>
